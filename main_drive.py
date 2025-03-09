@@ -181,10 +181,11 @@ llm = ChatGroq(
 if "messages" not in st.session_state:
     st.session_state.messages = []
     
-# Gesprächsspeicher für Langchain initialisieren
+# Gesprächsspeicher für Langchain initialisieren - Hier output_key hinzufügen
 memory = ConversationBufferMemory(
     memory_key="chat_history",
-    return_messages=True
+    return_messages=True,
+    output_key="answer"  # Explizites Setzen des output_key
 )
 
 # Konversationskette erstellen
