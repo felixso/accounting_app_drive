@@ -1,7 +1,7 @@
 import streamlit as st
 import os
 import tempfile
-import gdown
+import requests
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_groq import ChatGroq
@@ -18,15 +18,40 @@ if not groq_api_key:
     st.error("Kein GROQ API-Key gefunden. Bitte stellen Sie sicher, dass der API-Key in den Streamlit-Secrets oder als Umgebungsvariable gesetzt ist.")
     st.stop()
 
-# URLs für FAISS-Dateien auf Google Drive
-faiss_index_url = st.secrets.get("FAISS_INDEX_URL", os.environ.get("FAISS_INDEX_URL"))
-faiss_pkl_url = st.secrets.get("FAISS_PKL_URL", os.environ.get("FAISS_PKL_URL"))
+# Google Drive Datei-IDs
+faiss_index_id = st.secrets.get("FAISS_INDEX_ID", os.environ.get("FAISS_INDEX_ID"))
+faiss_pkl_id = st.secrets.get("FAISS_PKL_ID", os.environ.get("FAISS_PKL_ID"))
 
-if not faiss_index_url or not faiss_pkl_url:
-    st.error("URLs für FAISS-Dateien fehlen. Bitte stellen Sie sicher, dass diese in den Streamlit-Secrets oder als Umgebungsvariablen gesetzt sind.")
+if not faiss_index_id or not faiss_pkl_id:
+    st.error("Google Drive File-IDs für FAISS-Dateien fehlen. Bitte stellen Sie sicher, dass diese in den Streamlit-Secrets oder als Umgebungsvariablen gesetzt sind.")
     st.stop()
 
-# Funktion zum Herunterladen der FAISS-Dateien von Google Drive
+# Funktion zum Herunterladen von Google Drive mit direktem Download-Link
+def download_file_from_google_drive(file_id, destination):
+    url = f"https://drive.google.com/uc?export=download&id={file_id}"
+    
+    # Für große Dateien benötigen wir manchmal einen Bestätigungstoken
+    session = requests.Session()
+    response = session.get(url, stream=True)
+    
+    # Prüfen, ob es ein Bestätigungsformular gibt
+    token = None
+    for key, value in response.cookies.items():
+        if key.startswith('download_warning'):
+            token = value
+            break
+    
+    if token:
+        url = f"{url}&confirm={token}"
+        response = session.get(url, stream=True)
+    
+    # Datei speichern
+    with open(destination, 'wb') as f:
+        for chunk in response.iter_content(chunk_size=32768):
+            if chunk:
+                f.write(chunk)
+
+# Funktion zum Laden der FAISS-Datenbank von Google Drive
 @st.cache_resource
 def load_faiss_from_drive():
     st.info("FAISS-Datenbank wird geladen...")
@@ -34,11 +59,13 @@ def load_faiss_from_drive():
     
     # FAISS-Index herunterladen
     faiss_index_path = os.path.join(temp_dir, "index.faiss")
-    gdown.download(faiss_index_url, faiss_index_path, quiet=False)
+    st.text("Downloading index.faiss...")
+    download_file_from_google_drive(faiss_index_id, faiss_index_path)
     
     # FAISS-PKL herunterladen
     faiss_pkl_path = os.path.join(temp_dir, "index.pkl")
-    gdown.download(faiss_pkl_url, faiss_pkl_path, quiet=False)
+    st.text("Downloading index.pkl...")
+    download_file_from_google_drive(faiss_pkl_id, faiss_pkl_path)
     
     # HuggingFace Embeddings initialisieren
     embeddings = HuggingFaceEmbeddings(
@@ -47,14 +74,88 @@ def load_faiss_from_drive():
     )
     
     # FAISS-Datenbank laden
-    vectorstore = FAISS.load_local(temp_dir, embeddings, "index",allow_dangerous_deserialization=True)
+    st.text("Loading FAISS vector store...")
+    vectorstore = FAISS.load_local(temp_dir, embeddings, "index")
     st.success("FAISS-Datenbank erfolgreich geladen!")
     
     return vectorstore
 
+# Hilfsfunktion zur Validierung der FAISS-Dateien
+def validate_files(temp_dir):
+    index_path = os.path.join(temp_dir, "index.faiss")
+    pkl_path = os.path.join(temp_dir, "index.pkl")
+    
+    st.text(f"Überprüfe Dateien im Verzeichnis {temp_dir}:")
+    
+    if os.path.exists(index_path):
+        file_size = os.path.getsize(index_path)
+        st.text(f"- index.faiss gefunden: {file_size} Bytes")
+        
+        # Prüfen, ob es sich um eine HTML-Datei handelt
+        with open(index_path, 'rb') as f:
+            header = f.read(10).decode('latin-1', errors='ignore')
+            if header.startswith('<!DOCTYPE') or header.startswith('<html') or header.startswith('<!DO'):
+                st.error("Die index.faiss-Datei enthält HTML statt der erwarteten FAISS-Daten!")
+                return False
+    else:
+        st.error("index.faiss nicht gefunden!")
+        return False
+        
+    if os.path.exists(pkl_path):
+        file_size = os.path.getsize(pkl_path)
+        st.text(f"- index.pkl gefunden: {file_size} Bytes")
+        
+        # Prüfen, ob es sich um eine HTML-Datei handelt
+        with open(pkl_path, 'rb') as f:
+            header = f.read(10).decode('latin-1', errors='ignore')
+            if header.startswith('<!DOCTYPE') or header.startswith('<html') or header.startswith('<!DO'):
+                st.error("Die index.pkl-Datei enthält HTML statt der erwarteten Pickle-Daten!")
+                return False
+    else:
+        st.error("index.pkl nicht gefunden!")
+        return False
+        
+    return True
+
 # FAISS-Datenbank laden
 try:
-    vectorstore = load_faiss_from_drive()
+    # Wenn Debug-Option aktiviert ist, detaillierte Informationen anzeigen
+    debug_mode = st.sidebar.checkbox("Debug-Modus")
+    
+    if debug_mode:
+        temp_dir = tempfile.mkdtemp()
+        st.info(f"Temporäres Verzeichnis: {temp_dir}")
+        
+        # FAISS-Index herunterladen
+        faiss_index_path = os.path.join(temp_dir, "index.faiss")
+        st.text(f"Downloading index.faiss (ID: {faiss_index_id})...")
+        download_file_from_google_drive(faiss_index_id, faiss_index_path)
+        
+        # FAISS-PKL herunterladen
+        faiss_pkl_path = os.path.join(temp_dir, "index.pkl")
+        st.text(f"Downloading index.pkl (ID: {faiss_pkl_id})...")
+        download_file_from_google_drive(faiss_pkl_id, faiss_pkl_path)
+        
+        # Dateien validieren
+        if validate_files(temp_dir):
+            st.success("Dateien erfolgreich heruntergeladen und validiert.")
+            
+            # HuggingFace Embeddings initialisieren
+            embeddings = HuggingFaceEmbeddings(
+                model_name="sentence-transformers/all-MiniLM-L6-v2",
+                model_kwargs={'device': 'cpu'}
+            )
+            
+            # FAISS-Datenbank laden
+            st.text("Loading FAISS vector store...")
+            vectorstore = FAISS.load_local(temp_dir, embeddings, "index",allow_dangerous_deserialization=True)
+            st.success("FAISS-Datenbank erfolgreich geladen!")
+        else:
+            st.error("Fehler bei der Dateivalidierung. Bitte überprüfen Sie die Google Drive-IDs.")
+            st.stop()
+    else:
+        vectorstore = load_faiss_from_drive()
+        
 except Exception as e:
     st.error(f"Fehler beim Laden der FAISS-Datenbank: {e}")
     st.stop()
@@ -62,7 +163,7 @@ except Exception as e:
 # Groq LLM initialisieren
 llm = ChatGroq(
     api_key=groq_api_key,
-    model_name="llama3-70b-8192",  # Kann angepasst werden
+    model_name="llama3-70b-8192",  # Kann angepasst werden, je nach Präferenz
     temperature=0.5,
 )
 
