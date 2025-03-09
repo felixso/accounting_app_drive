@@ -5,3 +5,4 @@ langchain-groq
 gdown
 sentence-transformers
 faiss-cpu
+requests
