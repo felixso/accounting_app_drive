@@ -73,9 +73,14 @@ def load_faiss_from_drive():
         model_kwargs={'device': 'cpu'}
     )
     
-    # FAISS-Datenbank laden
+    # FAISS-Datenbank laden - Hier allow_dangerous_deserialization auf True setzen
     st.text("Loading FAISS vector store...")
-    vectorstore = FAISS.load_local(temp_dir, embeddings, "index")
+    vectorstore = FAISS.load_local(
+        temp_dir, 
+        embeddings, 
+        "index", 
+        allow_dangerous_deserialization=True  # Erlaubt das sichere Laden der Pickle-Datei
+    )
     st.success("FAISS-Datenbank erfolgreich geladen!")
     
     return vectorstore
@@ -148,7 +153,12 @@ try:
             
             # FAISS-Datenbank laden
             st.text("Loading FAISS vector store...")
-            vectorstore = FAISS.load_local(temp_dir, embeddings, "index",allow_dangerous_deserialization=True)
+            vectorstore = FAISS.load_local(
+                temp_dir, 
+                embeddings, 
+                "index",
+                allow_dangerous_deserialization=True  # Erlaubt das sichere Laden der Pickle-Datei
+            )
             st.success("FAISS-Datenbank erfolgreich geladen!")
         else:
             st.error("Fehler bei der Dateivalidierung. Bitte überprüfen Sie die Google Drive-IDs.")
