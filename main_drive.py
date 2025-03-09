@@ -47,7 +47,7 @@ def load_faiss_from_drive():
     )
     
     # FAISS-Datenbank laden
-    vectorstore = FAISS.load_local(temp_dir, embeddings, "index")
+    vectorstore = FAISS.load_local(temp_dir, embeddings, "index",allow_dangerous_deserialization=True)
     st.success("FAISS-Datenbank erfolgreich geladen!")
     
     return vectorstore
