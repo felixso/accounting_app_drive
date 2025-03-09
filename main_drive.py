@@ -1,90 +1,159 @@
-import os
 import streamlit as st
+import os
+import tempfile
 import gdown
-from langchain.vectorstores import FAISS
-from langchain.embeddings import HuggingFaceEmbeddings
+from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_community.vectorstores import FAISS
 from langchain_groq import ChatGroq
 from langchain.chains import ConversationalRetrievalChain
-import shutil
+from langchain.memory import ConversationBufferMemory
 
-# Google Drive Datei-IDs 
-FAISS_INDEX_ID = "1jSBoE_P9TNCqePGBuymHyoYwO2lMaCV0"
-FAISS_PKL_ID = "1qzw7VadNOJfoO34Hsp_l39XDQfKvm0Fk"
+# Streamlit App-Titel setzen
+st.title("RAG Chatbot mit FAISS-Datenbank")
 
-# Verzeichnisse erstellen
-FAISS_PATH = "faiss_db"
-os.makedirs(FAISS_PATH, exist_ok=True)
+# API-Key für Groq aus Streamlit Secrets oder Umgebungsvariablen
+groq_api_key = st.secrets.get("GROQ_API_KEY", os.environ.get("GROQ_API_KEY"))
 
-# Dateien aus Google Drive herunterladen
-def download_faiss():
-    gdown.download(f"https://drive.google.com/uc?id={FAISS_INDEX_ID}", f"{FAISS_PATH}/index.faiss", quiet=False)
-    gdown.download(f"https://drive.google.com/uc?id={FAISS_PKL_ID}", f"{FAISS_PATH}/index.pkl", quiet=False)
+if not groq_api_key:
+    st.error("Kein GROQ API-Key gefunden. Bitte stellen Sie sicher, dass der API-Key in den Streamlit-Secrets oder als Umgebungsvariable gesetzt ist.")
+    st.stop()
 
+# URLs für FAISS-Dateien auf Google Drive
+faiss_index_url = st.secrets.get("FAISS_INDEX_URL", os.environ.get("FAISS_INDEX_URL"))
+faiss_pkl_url = st.secrets.get("FAISS_PKL_URL", os.environ.get("FAISS_PKL_URL"))
 
-# Initialisierung der FAISS-Datenbank
-def load_faiss_database():
-    try:
-        vector_store = FAISS.load_local(
-            "faiss_database", 
-            HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2"),
-            allow_dangerous_deserialization=True
-        )
-        return vector_store
-    except Exception as e:
-        st.error(f"Fehler beim Laden der FAISS-Datenbank: {e}")
-        st.stop()
+if not faiss_index_url or not faiss_pkl_url:
+    st.error("URLs für FAISS-Dateien fehlen. Bitte stellen Sie sicher, dass diese in den Streamlit-Secrets oder als Umgebungsvariablen gesetzt sind.")
+    st.stop()
 
-# Erstellung des RAG-Chatbots
-def create_rag_chatbot():
-    vector_store = load_faiss_database()
-    qa_chain = ConversationalRetrievalChain.from_llm(
-        llm=ChatGroq(model="llama-3.3-70b-versatile", temperature=0, api_key=os.environ["GROQ_API_KEY"]),
-        retriever=vector_store.as_retriever(),
-        return_source_documents=True
+# Funktion zum Herunterladen der FAISS-Dateien von Google Drive
+@st.cache_resource
+def load_faiss_from_drive():
+    st.info("FAISS-Datenbank wird geladen...")
+    temp_dir = tempfile.mkdtemp()
+    
+    # FAISS-Index herunterladen
+    faiss_index_path = os.path.join(temp_dir, "index.faiss")
+    gdown.download(faiss_index_url, faiss_index_path, quiet=False)
+    
+    # FAISS-PKL herunterladen
+    faiss_pkl_path = os.path.join(temp_dir, "index.pkl")
+    gdown.download(faiss_pkl_url, faiss_pkl_path, quiet=False)
+    
+    # HuggingFace Embeddings initialisieren
+    embeddings = HuggingFaceEmbeddings(
+        model_name="sentence-transformers/all-MiniLM-L6-v2",
+        model_kwargs={'device': 'cpu'}
     )
-    return qa_chain
+    
+    # FAISS-Datenbank laden
+    vectorstore = FAISS.load_local(temp_dir, embeddings, "index")
+    st.success("FAISS-Datenbank erfolgreich geladen!")
+    
+    return vectorstore
 
-# Streamlit-UI
-def main():
-    st.set_page_config(page_title="IFRS-Chatbot mit RAG", page_icon="🤖")
-    st.title("🤖 Chatbot mit RAG-Funktion. Dieser Chatbot beantwortet Fragen zu den derzeit in der EU gültigen IFRS-Standards.")
+# FAISS-Datenbank laden
+try:
+    vectorstore = load_faiss_from_drive()
+except Exception as e:
+    st.error(f"Fehler beim Laden der FAISS-Datenbank: {e}")
+    st.stop()
 
-    st.sidebar.header("Einstellungen")
-    reset_chat = st.sidebar.button("Chat zurücksetzen")
+# Groq LLM initialisieren
+llm = ChatGroq(
+    api_key=groq_api_key,
+    model_name="llama3-70b-8192",  # Kann angepasst werden
+    temperature=0.5,
+)
 
-    if "chat_history" not in st.session_state:
-        st.session_state.chat_history = []
+# Gesprächsverlauf im Session State initialisieren
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+    
+# Gesprächsspeicher für Langchain initialisieren
+memory = ConversationBufferMemory(
+    memory_key="chat_history",
+    return_messages=True
+)
 
-    if "qa_chain" not in st.session_state:
-        st.session_state.qa_chain = create_rag_chatbot()
+# Konversationskette erstellen
+qa_chain = ConversationalRetrievalChain.from_llm(
+    llm=llm,
+    retriever=vectorstore.as_retriever(search_kwargs={"k": 3}),
+    memory=memory,
+    return_source_documents=True,
+    verbose=True,
+)
 
-    if reset_chat:
-        st.session_state.chat_history = []  # Reset chat history
-        st.rerun()
+# Bisherigen Chatverlauf anzeigen
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.write(message["content"])
 
-    # Chat-Verlauf anzeigen mit st.chat_message
-    for message in st.session_state.chat_history:
-        with st.chat_message("user"):
-            st.markdown(message[0])
-        with st.chat_message("assistant"):
-            st.markdown(message[1])
+# Benutzereingabe
+user_query = st.chat_input("Stellen Sie Ihre Frage...")
 
-    # Eingabefeld mit st.chat_input
-    user_input = st.chat_input("Stelle eine Frage:")
+if user_query:
+    # Benutzernachricht anzeigen
+    with st.chat_message("user"):
+        st.write(user_query)
+    
+    # Nachricht zum Chatverlauf hinzufügen
+    st.session_state.messages.append({"role": "user", "content": user_query})
+    
+    # Antwort generieren
+    with st.spinner("Antwort wird generiert..."):
+        try:
+            response = qa_chain({"question": user_query})
+            ai_response = response["answer"]
+            
+            # Quellen aus Dokumenten extrahieren, wenn vorhanden
+            if "source_documents" in response and response["source_documents"]:
+                sources = set()
+                for doc in response["source_documents"]:
+                    if hasattr(doc, "metadata") and "source" in doc.metadata:
+                        sources.add(doc.metadata["source"])
+                
+                if sources:
+                    ai_response += "\n\n**Quellen:**\n"
+                    for i, source in enumerate(sources, 1):
+                        ai_response += f"{i}. {source}\n"
+        
+        except Exception as e:
+            ai_response = f"Bei der Verarbeitung Ihrer Anfrage ist ein Fehler aufgetreten: {str(e)}"
+    
+    # Antwort anzeigen
+    with st.chat_message("assistant"):
+        st.write(ai_response)
+    
+    # Antwort zum Chatverlauf hinzufügen
+    st.session_state.messages.append({"role": "assistant", "content": ai_response})
 
-    if user_input:
-        with st.chat_message("user"):
-            st.markdown(user_input)
-
-        with st.spinner("Antwort wird generiert..."):
-            try:
-                response = st.session_state.qa_chain({"question": user_input, "chat_history": st.session_state.chat_history})
-                st.session_state.chat_history.append((user_input, response["answer"]))
-
-                with st.chat_message("assistant"):
-                    st.markdown(response["answer"])
-            except Exception as e:
-                st.error(f"Fehler bei der Verarbeitung: {e}")
-
-if __name__ == "__main__":
-    main()
+# Seitenleiste mit Informationen
+with st.sidebar:
+    st.title("Über diesen Chatbot")
+    st.write("""
+    Dieser Chatbot nutzt RAG (Retrieval-Augmented Generation) mit einer FAISS-Datenbank, 
+    um Antworten auf Ihre Fragen zu generieren.
+    
+    **Verwendete Technologien:**
+    - Streamlit für die Benutzeroberfläche
+    - Groq LLM für die Textgenerierung
+    - Langchain für die RAG-Pipeline
+    - HuggingFace Embeddings für die Vektorisierung
+    - FAISS als Vektordatenbank
+    """)
+    
+    # Optionale Benutzereinstellungen
+    st.subheader("Einstellungen")
+    temperature = st.slider("Kreativität (Temperature)", min_value=0.0, max_value=1.0, value=0.5, step=0.1)
+    if temperature != 0.5:
+        llm.temperature = temperature
+        st.info(f"Temperature wurde auf {temperature} gesetzt.")
+        
+    # Optionen zum Zurücksetzen des Chatverlaufs
+    if st.button("Chatverlauf zurücksetzen"):
+        st.session_state.messages = []
+        memory.clear()
+        st.success("Chatverlauf wurde zurückgesetzt!")
+        st.experimental_rerun()
