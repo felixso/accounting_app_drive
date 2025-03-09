@@ -13,4 +13,3 @@ nltk
 tf-keras
 opencv-python-headless
 gdown
-shutil
